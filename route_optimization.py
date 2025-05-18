@@ -1,4 +1,5 @@
 import math
+import time
 from models import Truck, WasteBin
 
 def distance(bin1, bin2):
@@ -14,15 +15,17 @@ def total_route_distance(route):
         total += distance(route[i], route[i + 1])
     return total
 
-def optimize_route_backtracking(truck, waste_bins, start_point=None):
+def optimize_route_backtracking(truck, waste_bins, start_point=None, max_bins=15, time_limit=5.0):
     """
-    Use backtracking to find optimal route for a truck to collect waste.
+    Use backtracking with optimizations to find optimal route for a truck to collect waste.
     Returns the optimized route and its distance.
     
     Args:
         truck: The truck object
         waste_bins: List of waste bins that need collection
         start_point: Starting location coordinates (x,y)
+        max_bins: Maximum number of bins to consider for optimization (limits complexity)
+        time_limit: Maximum time in seconds to spend on optimization
     """
     if not waste_bins:
         return [], 0
@@ -44,14 +47,22 @@ def optimize_route_backtracking(truck, waste_bins, start_point=None):
     # Sort bins by fill level to prioritize fuller bins
     priority_bins = sorted(priority_bins, key=lambda x: x.current_level, reverse=True)
     
+    # Limit the number of bins to process to avoid exponential complexity
+    priority_bins = priority_bins[:max_bins]
+    
     best_route = []
     best_distance = float('inf')
     visited = [False] * len(priority_bins)
     current_route = []
     current_load = 0
+    start_time = time.time()
     
     def backtrack(position, current_distance):
         nonlocal best_route, best_distance, current_route, current_load
+        
+        # Check if time limit is reached
+        if time.time() - start_time > time_limit:
+            return
         
         # If all bins that can fit are visited or truck is full
         if all(visited) or current_load >= truck.capacity * 0.9:
@@ -61,28 +72,32 @@ def optimize_route_backtracking(truck, waste_bins, start_point=None):
                 best_route = current_route.copy()
             return
         
+        # Sort remaining bins by distance to current position for better pruning
+        remaining_indices = []
         for i in range(len(priority_bins)):
-            # Skip if already visited or bin would overload truck
-            if visited[i] or current_load + priority_bins[i].current_level > truck.capacity:
-                continue
-                
+            if not visited[i] and current_load + priority_bins[i].current_level <= truck.capacity:
+                if not truck.bin_type_specialty or priority_bins[i].bin_type == truck.bin_type_specialty or priority_bins[i].bin_type == "Mixed":
+                    dist_to_bin = 0
+                    if position is not None:
+                        if current_route:
+                            dist_to_bin = distance(current_route[-1], priority_bins[i])
+                        else:
+                            # Distance from start point to first bin
+                            x, y = position
+                            start_bin = WasteBin(bin_id="-1", location=position, fill_level=0)  # Dummy bin for calculation
+                            dist_to_bin = distance(start_bin, priority_bins[i])
+                    remaining_indices.append((i, dist_to_bin))
+        
+        # Sort by distance (nearest first) for better pruning
+        remaining_indices.sort(key=lambda x: x[1])
+        
+        for i, dist_to_bin in remaining_indices:
             # Skip if truck specializes in a waste type and this bin doesn't match (unless mixed)
             if (truck.bin_type_specialty and 
                 priority_bins[i].bin_type != truck.bin_type_specialty and 
                 priority_bins[i].bin_type != "Mixed"):
                 continue
                 
-            # Calculate distance from current position to this bin
-            dist_to_bin = 0
-            if position is not None:
-                if current_route:
-                    dist_to_bin = distance(current_route[-1], priority_bins[i])
-                else:
-                    # Distance from start point to first bin
-                    x, y = position
-                    start_bin = WasteBin(-1, position, 0, 0)  # Dummy bin for calculation
-                    dist_to_bin = distance(start_bin, priority_bins[i])
-            
             # Try this bin
             visited[i] = True
             current_route.append(priority_bins[i])
@@ -91,6 +106,10 @@ def optimize_route_backtracking(truck, waste_bins, start_point=None):
             # Recursive call
             backtrack(priority_bins[i].location, current_distance + dist_to_bin)
             
+            # If we've found a good enough solution or reached time limit, stop searching
+            if best_distance < float('inf') and time.time() - start_time > time_limit:
+                return
+            
             # Backtrack
             visited[i] = False
             current_route.pop()
@@ -98,7 +117,71 @@ def optimize_route_backtracking(truck, waste_bins, start_point=None):
     
     # Start the backtracking process
     backtrack(start_point, 0)
+    
+    # If we couldn't find a route with backtracking (due to time constraints),
+    # fall back to a greedy approach
+    if not best_route and priority_bins:
+        print(f"Fallback to greedy algorithm for truck {truck.truck_id}")
+        return greedy_route_optimization(truck, priority_bins, start_point)
+        
     return best_route, best_distance
+
+def greedy_route_optimization(truck, waste_bins, start_point=None):
+    """
+    A faster greedy algorithm for route optimization when backtracking is too slow.
+    Always picks the nearest bin that fits in the truck.
+    """
+    route = []
+    remaining_bins = waste_bins.copy()
+    current_load = 0
+    total_distance = 0
+    current_position = start_point
+    
+    while remaining_bins and current_load < truck.capacity * 0.9:
+        # Find nearest bin that fits
+        nearest_bin = None
+        nearest_distance = float('inf')
+        nearest_idx = -1
+        
+        for i, bin in enumerate(remaining_bins):
+            # Skip if bin would overload truck
+            if current_load + bin.current_level > truck.capacity:
+                continue
+                
+            # Skip if truck specializes in a waste type and this bin doesn't match
+            if (truck.bin_type_specialty and 
+                bin.bin_type != truck.bin_type_specialty and 
+                bin.bin_type != "Mixed"):
+                continue
+            
+            # Calculate distance to this bin
+            if current_position:
+                if route:
+                    dist = distance(route[-1], bin)
+                else:
+                    # Distance from start point to first bin
+                    start_bin = WasteBin(bin_id="-1", location=current_position, fill_level=0)
+                    dist = distance(start_bin, bin)
+            else:
+                dist = 0
+                
+            if dist < nearest_distance:
+                nearest_distance = dist
+                nearest_bin = bin
+                nearest_idx = i
+        
+        # If found a bin that fits, add it to the route
+        if nearest_bin:
+            route.append(nearest_bin)
+            current_load += nearest_bin.current_level
+            total_distance += nearest_distance
+            current_position = nearest_bin.location
+            del remaining_bins[nearest_idx]
+        else:
+            # No more bins fit in the truck
+            break
+    
+    return route, total_distance
 
 def assign_trucks_to_districts(trucks, districts):
     """Assign trucks to districts based on waste volume and type"""
@@ -145,6 +228,7 @@ def assign_trucks_to_districts(trucks, districts):
             # Look for recyclable specialized truck
             for i, truck in enumerate(available_trucks):
                 if truck.bin_type_specialty == "Recyclable":
+                    print(f"Optimizing routes for District {district.district_id} with Truck {truck.truck_id} (Recyclable specialist)...")
                     route, distance = optimize_route_backtracking(truck, district.waste_bins, (0, 0))
                     if route:
                         truck.route = route
@@ -160,6 +244,7 @@ def assign_trucks_to_districts(trucks, districts):
             # Look for non-recyclable specialized truck
             for i, truck in enumerate(available_trucks):
                 if truck.bin_type_specialty == "Non Recyclable":
+                    print(f"Optimizing routes for District {district.district_id} with Truck {truck.truck_id} (Non-Recyclable specialist)...")
                     route, distance = optimize_route_backtracking(truck, district.waste_bins, (0, 0))
                     if route:
                         truck.route = route
@@ -178,6 +263,7 @@ def assign_trucks_to_districts(trucks, districts):
             
         if available_trucks:
             truck = available_trucks.pop(0)
+            print(f"Optimizing routes for District {district.district_id} with Truck {truck.truck_id} (General purpose)...")
             route, distance = optimize_route_backtracking(truck, district.waste_bins, (0, 0))
             
             if route:

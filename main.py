@@ -2,6 +2,7 @@ import random
 import csv
 import matplotlib.pyplot as plt
 import numpy as np
+import time
 from models import District, WasteBin, Truck
 from map_coloring import map_coloring, visualize_districts
 from route_optimization import assign_trucks_to_districts, optimize_route_backtracking
@@ -54,8 +55,8 @@ def load_districts_from_csv():
             
     return list(districts.values())
 
-def load_waste_bins_from_csv():
-    """Load waste bin data from Smart_Bin.csv"""
+def load_waste_bins_from_csv(max_bins=100):
+    """Load waste bin data from Smart_Bin.csv with a limit to improve performance"""
     waste_bins = []
     bin_id = 1
     
@@ -85,8 +86,8 @@ def load_waste_bins_from_csv():
                 bin_id += 1
                 waste_bins.append(waste_bin)
                 
-                # Limit to 100 bins for better visualization
-                if bin_id > 100:
+                # Limit to max_bins for better performance
+                if bin_id > max_bins:
                     break
                     
     except FileNotFoundError:
@@ -180,9 +181,10 @@ def visualize_routes(assignments, show_plot=True):
                      [route[j].location[1], route[j+1].location[1]],
                      color=color, linewidth=2, alpha=0.5)
             
-        # Mark bin IDs
-        for bin in route:
-            plt.annotate(bin.bin_id, bin.location, fontsize=8)
+        # Mark bin IDs - only mark a subset of IDs to avoid clutter
+        for j, bin in enumerate(route):
+            if j % 3 == 0 or j == len(route)-1:  # Mark every 3rd bin and the last bin
+                plt.annotate(bin.bin_id, bin.location, fontsize=8)
     
     # Add a legend for waste bin types
     for bin_type, marker in markers.items():
@@ -205,17 +207,24 @@ def main():
     print("Smart Waste Management System")
     print("-----------------------------")
     
+    # Set a lower bin limit for better performance
+    max_bins = 50  # Reduced from 100 for better performance
+    
+    start_time = time.time()
+    print(f"\nLoading data...")
+    
     # Load real data from CSV files
     districts = load_districts_from_csv()
-    waste_bins = load_waste_bins_from_csv()
+    waste_bins = load_waste_bins_from_csv(max_bins=max_bins)
     
-    print(f"\nLoaded {len(waste_bins)} waste bins from Smart_Bin.csv")
+    print(f"Loaded {len(waste_bins)} waste bins from Smart_Bin.csv in {time.time() - start_time:.2f} seconds")
     
     # Assign bins to districts
+    print("\nAssigning bins to districts...")
     districts = assign_bins_to_districts(districts, waste_bins)
     
     # Apply map coloring to segment districts
-    print("\nApplying map coloring algorithm to segment districts...")
+    print("Applying map coloring algorithm to segment districts...")
     colored_districts = map_coloring(districts)
     
     # Save district visualization without showing it
@@ -233,8 +242,12 @@ def main():
     trucks = create_trucks()
     
     # Optimize routes and assign trucks
-    print("\nOptimizing routes using backtracking...")
+    print("\nOptimizing routes using backtracking (with time limits)...")
+    optimization_start = time.time()
+    
     assignments = assign_trucks_to_districts(trucks, colored_districts)
+    
+    print(f"Route optimization completed in {time.time() - optimization_start:.2f} seconds")
     
     # Print assignment results (simplified)
     print("\nTruck Assignments:")
@@ -249,9 +262,11 @@ def main():
               f"Bins = {len(route)}, Waste = {waste_to_collect:.1f}, Distance = {distance:.1f}")
     
     # Save route visualization without showing it
+    print("\nGenerating route visualizations...")
     visualize_routes(assignments, show_plot=False)
     
-    print("\nWaste management optimization complete!")
+    total_time = time.time() - start_time
+    print(f"\nWaste management optimization complete! Total time: {total_time:.2f} seconds")
     print("Results saved to district_map.png and routes.png")
 
 if __name__ == "__main__":
